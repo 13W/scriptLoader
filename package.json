@@ -25,5 +25,9 @@
   "bugs": {
     "url": "https://github.com/13W/scriptLoader/issues"
   },
-  "homepage": "https://github.com/13W/scriptLoader"
+  "homepage": "https://github.com/13W/scriptLoader",
+  "directories": {
+    "test": "test"
+  },
+  "devDependencies": {}
 }
