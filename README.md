@@ -1,7 +1,7 @@
 scriptLoader
 ============
 
-JavaScript Loader (ala bootstrap/injector)
+JavaScript Loader (aka bootstrap/injector)
 
 Install
 =======
