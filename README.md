@@ -18,3 +18,7 @@ Use
 ```
 
 Examples in test folder
+
+
+[![Bitdeli Badge](https://d2weczhvl823v0.cloudfront.net/13W/scriptloader/trend.png)](https://bitdeli.com/free "Bitdeli Badge")
+
