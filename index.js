@@ -4,8 +4,9 @@ var fs = require('fs'),
 
 /**
  * Loader
- * @param {String} name name of the loader instance
- * @property {Object} [config] config loader config
+ * @namespace config {Object}
+ * @property config.name {String}
+ * @property config.log {Object}
  */
 function Loader(name, config) {
     if (!config) {
@@ -61,6 +62,8 @@ Loader.prototype.wrappers = {};
  * @throws {instance} without name
  * @param {Object} instance function or object with name
  * @param {Boolean} [silent=false] without injection
+ * @namespace instance {Object|Function}
+ * @property instance.name {String}
  */
 Loader.prototype.registerFunction = function (instance, silent) {
     if (typeof instance === 'function') {
@@ -90,12 +93,14 @@ Loader.prototype.registerFunction = function (instance, silent) {
  */
 Loader.prototype.get = function (name) {
     var instance = this.functions[name];
-    return instance ? this.invoke(instance) : null;
+    return instance && instance.hasOwnProperty('exports') ? instance.exports : this.invoke(instance);
 };
 
 /**
  * Wrap called argument function
- * @param {Function} wrapper Function with name
+ * @param {*} wrapper Function with name
+ * @namespace wrapper {Object}
+ * @property wrapper.name {String}
  */
 Loader.prototype.registerWrapper = function (wrapper) {
     if (!wrapper.name) {
@@ -113,19 +118,13 @@ Loader.prototype.registerWrapper = function (wrapper) {
  * Parse function, map arguments
  * @throws when injection not found
  * @param {*} instance
- * @param {String} instance.name
- * @param {String} [instance.filename]
- * @param {Array} [instance.injections]
- * @param {Boolean} [instance.completed]
- * @param {Function} instance.function
- * @param {*} [instance.exports]
- * @param {*} [instance.scope]
+ * @namespace instance {Object}
+ * @property instance.name {String}
+ * @property instance.function {Function}
+ * @property instance.injections {Array} Injections
  */
 Loader.prototype.createInjections = function (instance) {
-    if (!instance.injections || !instance.completed) {
-        if (!instance.function) {
-            console.trace(instance);
-        }
+    if (!instance.exports) {
         var injections = [],
             args = instance.function.toString()
                 .replace(/((\/\/.*$)|(\/\*[\s\S]*?\*\/)|(\s))/mg,'')
@@ -166,20 +165,15 @@ Loader.prototype.createInjections = function (instance) {
             }
         }
 
-        //noinspection JSUndefinedPropertyAssignment
         instance.injections = injections;
     }
 };
 /**
  * invoke function in loader scope
- * @param {*} instance
- * @param {String} instance.name
- * @param {String} [instance.filename]
- * @param {Array} [instance.injections]
- * @param {Boolean} [instance.completed]
- * @param {Function} instance.function
- * @param {*} [instance.exports]
- * @param {*} [instance.scope]
+ * @namespace instance {Object}
+ * @property instance.name {String} Function name
+ * @property instance.function {Function}
+ * @property instance.injections {Array} Injections
  * @returns {*}
  */
 Loader.prototype.invoke = function(instance) {
@@ -191,10 +185,12 @@ Loader.prototype.invoke = function(instance) {
         //noinspection JSValidateTypes
         return this.invoke({function: instance, name: instance.name});
     }
-    
+
     this.createInjections(instance);
-    var result = instance.function.apply(instance.scope, instance.injections);
-    if (instance.exports === undefined) {
+    var result = instance.exports;
+
+    if (!instance.hasOwnProperty('exports')) {
+        result = instance.function.apply(instance.scope, instance.injections);
         //noinspection JSUndefinedPropertyAssignment
         instance.exports = result;
     }
