@@ -92,8 +92,21 @@ Loader.prototype.registerFunction = function (instance, silent) {
  * @returns {*}
  */
 Loader.prototype.get = function (name) {
-    var instance = this.functions[name];
-    return instance && instance.hasOwnProperty('exports') ? instance.exports : this.invoke(instance);
+    var instance = this.functions[name],
+        result = instance;
+    
+    if (!instance && this.wrappers[name]) {
+        instance = {exports: this.wrappers[name].call(this)};
+    }
+    
+    if (instance) {
+        if (instance.hasOwnProperty('exports')) {
+            result = instance.exports;
+        } else {
+            result = this.invoke(instance);
+        }
+    }
+    return result;
 };
 
 /**
@@ -268,9 +281,11 @@ Loader.prototype.load = function (directory) {
 var loader = new Loader('main');
 
 loader.registerWrapper(function logger(instance) {
-    return this.logger.child({
-        app: instance.name
-    });
+    var app = {};
+    if (instance && instance.name) {
+        app.app = instance.name;
+    }
+    return this.logger.child(app);
 });
 
 loader.registerWrapper(function injector() {
