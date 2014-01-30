@@ -14,3 +14,7 @@ exports.$circle = function inject(logger, $api) {
     logger.info('$circle injected---!!!', $api);
     return 'My $circle!!!';
 };
+
+exports.exec = function exec(logger) {
+    logger.info('exec executed!');
+};

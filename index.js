@@ -264,17 +264,18 @@ Loader.prototype.load = function (directory) {
     for (i = 0; i < this.stages.length; i+=1) {
         var stage = this.stages[i];
 
-        this.logger.fields.stage = stage;
-
         while(queue[stage].length) {
             var instance = queue[stage].shift();
             if (stage === 'inject') {
-                queue.exec.unshift(this.registerFunction(instance, true));
+                var rf = this.registerFunction(instance, true);
+                rf.stage = stage;
+                queue.exec.unshift(rf);
             } else {
+                this.logger.fields.stage = instance.stage;
                 this.invoke(instance);
+                delete this.logger.fields.stage;
             }
         }
-        delete this.logger.fields.stage;
     }
 };
 
