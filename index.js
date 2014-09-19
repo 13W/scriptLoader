@@ -1,296 +1,236 @@
 var fs = require('fs'),
     path = require('path'),
-    Logger = require('bunyan');
+    Logger = require('bunyan'),
+    util = require('util'),
+    EventEmitter = require('events').EventEmitter;
 
-/**
- * Loader
- * @namespace config {Object}
- * @property config.name {String}
- * @property config.log {Object}
- */
-function Loader(name, config) {
-    if (!config) {
-        config = {};
-        if (typeof name === 'object') {
-            config = name;
-            name = config.name;
+function Injection(name, data) {
+    this.completed = false;
+    this.exports = null;
+    this.func = null;
+    this.type = 'data';
+    if (typeof data === 'function') {
+        this.args = data.toString()
+            .replace(/((\/\/.*$)|(\/\*[\s\S]*?\*\/)|(\s))/mg,'')
+            .match(/^function\s*[^\(]*\(\s*([^\)]*)\)/m)[1]
+            .split(/,/)
+            .filter(function(e) {
+                return !!e;
+            });
+        this.func = data;
+        this.type = data.name;
+    } else {
+        this.exports = data;
+        this.completed = true;
+    }
+    var self = this;
+
+    this.done = function (error, result) {
+        if (error) {
+            throw error;
+        }
+        self.exports = result;
+        self.completed = true;
+        self.emit('completed', result);
+    };
+
+    this.name = name;
+    this.injections = [];
+    this.async = this.type === 'async';
+
+    EventEmitter.apply(this);
+
+    return this;
+}
+
+util.inherits(Injection, EventEmitter);
+
+Injection.prototype.get = function () {
+    var self = this;
+    return function (callback) {
+        if (self.completed) {
+            callback(self.exports);
+        } else {
+            self.on('completed', callback);
         }
     }
-    if (!name) {
-        throw new Error('name required');
-    }
+};
 
+function Loader(name, config) {
     if (!(this instanceof Loader)) {
         return new Loader(name, config);
     }
 
     this.name = name;
     this.config = config || {};
-    this.functions = {};
+    this.config.log = this.config.log || {};
+    this.config.log.name = this.config.log.name || name;
+    this.config.log.level = this.config.log.level || 'info';
 
     if (this.config.log instanceof Logger) {
         this.logger = this.config.log.child({
             loader: this.name
         });
     } else {
-        this.logger = Logger.createLogger({
-            name: name,
-            level: 'info'
-        });
+        this.logger = Logger.createLogger(this.config.log);
     }
 }
 
-Loader.prototype.stages = ['inject', 'exec'];
-
-//noinspection JSUnusedGlobalSymbols
-/**
- * return new instance of Loader
- * @param {String} name the name of the new Logger instance
- * @param {Object} [config={}] Config
- * @returns {Loader}
- */
-Loader.prototype.next = function (name, config) {
-    config = config || {};
-    config.log = config.log || this.logger;
-
-    return new Loader(name, config);
-};
-
+Loader.prototype.injections = {};
 Loader.prototype.wrappers = {};
+Loader.prototype.load = function load(dir) {
+    var required = [];
 
-/**Register function in loader scope
- * @throws {instance} without name
- * @param {Object} instance function or object with name
- * @param {Boolean} [silent=false] without injection
- * @namespace instance {Object|Function}
- * @property instance.name {String}
- */
-Loader.prototype.registerFunction = function (instance, silent) {
-    if (typeof instance === 'function') {
-        if (!instance.name) {
-            throw new Error('Function name required');
-        }
-        instance = {function: instance, name: instance.name};
-    }
-
-    if (this.functions[instance.name]) {
-        this.logger.warn('"%s" redeclared, first declaration in: %s', instance.name, this.functions[instance.name].filename);
-    }
-
-    this.functions[instance.name] = instance;
-    if (silent) {
-        return this.functions[instance.name];
+    function scan(dir) {
+        var files = fs.readdirSync(dir);
+        //noinspection JSUnresolvedFunction
+        files.forEach(function (file) {
+            var fullPath = path.resolve(dir, file),
+                stat = fs.statSync(fullPath);
+            if (stat.isDirectory()) {
+                return scan(fullPath);
+            }
+            if (/\.i(?:nject)?\.js$/.test(fullPath)) {
+                required.push(require(fullPath));
+            }
+        });
     }
     
-    this.createInjections(this.functions[instance.name]);
-    return this;
+    scan(dir);
+
+    this.prepareFunctions(required);
 };
 
-/**
- * get injected function
- * @param {String} name function name
- * @returns {*}
- */
-Loader.prototype.get = function (name) {
-    var instance = this.functions[name],
-        result = instance;
-    
-    if (!instance && this.wrappers[name]) {
-        instance = {exports: this.wrappers[name].call(this)};
-    }
-    
-    if (instance) {
-        if (instance.hasOwnProperty('exports')) {
-            result = instance.exports;
-        } else {
-            result = this.invoke(instance);
+Loader.prototype.prepareFunctions = function prepareFunctions(exports) {
+    var execQueue = [],
+        name, i = 0;
+    for (; i < exports.length; i += 1) {
+        var data = exports[i];
+        for (name in data) {
+            if (!data.hasOwnProperty(name)) {
+                continue;
+            }
+
+            var injection = new Injection(name, data[name]);
+            if (injection.type === 'inject' || injection.type === 'async') {
+                this.injections[name] = injection;
+            }
+            if (injection.type === 'exec') {
+                execQueue.push(injection);
+            }
         }
     }
+    for (i = 0; i < execQueue.length; i += 1) {
+        this.invoke(execQueue[i]);
+    }
+};
+
+function waitArgs(funcs, callback) {
+    var lost = funcs.length;
+    var args = [];
+    if (!funcs.length) {
+        return callback(args);
+    }
+    funcs.forEach(function (func, index) {
+        func(function (result) {
+            args[index] = result;
+            if (--lost === 0) {
+                callback(args);
+            }
+        });
+    });
+}
+
+Loader.prototype.invoke = function (injection, parentInjections) {
+    parentInjections = parentInjections || [];
+    if (typeof injection === 'function') {
+        this.invoke(new Injection(injection.name || 'anonymous', injection));
+        return;
+    }
+
+    if (!(injection instanceof Injection)) {
+        throw new Error('Don\'t know what to do with this data');
+    }
+
+    if (injection.completed) {
+        return injection.exports;
+    }
+
+    var self = this,
+        args = injection.args.map(function (arg) {
+            if (injection.async && arg === 'done') {
+                return function (callback) {
+                    callback(injection.done);
+                } 
+            }
+            var injectionWrapper = self.wrappers[arg];
+            if (injectionWrapper) {
+                return function (callback) {
+                    callback(injectionWrapper.call(self, injection));
+                }
+            }
+            var argInjection = self.injections[arg];
+            if (!!~parentInjections.indexOf(injection.name)) {
+                //throw new Error('Circular dependency detected');
+                self.logger.error('Circular dependency detected %s => %s', injection.name, argInjection.name);
+                return argInjection.get();
+            }
+            if (!argInjection) {
+                throw new Error('Function "' + arg + '"  not found');
+            }
+            self.invoke(argInjection, [].concat(parentInjections, argInjection.args));
+            return argInjection.get();
+        }),
+        result = null;
+    
+    waitArgs(args, function (args) {
+        result = injection.func.apply(null, args);
+        if (!injection.async && !injection.completed) {
+            injection.done(null, result);
+        }
+    });
+
     return result;
 };
 
-/**
- * Wrap called argument function
- * @param {*} wrapper Function with name
- * @namespace wrapper {Object}
- * @property wrapper.name {String}
- */
 Loader.prototype.registerWrapper = function (wrapper) {
     if (!wrapper.name) {
         throw new Error('Wrapper must be a function with name');
     }
-    
+
     if (this.wrappers[wrapper.name]) {
-        this.logger.warn('Wrapper "%s" already registered', wrapper.name);
+        this.logger.error('Wrapper "%s" already registered', wrapper.name);
     } else {
         this.wrappers[wrapper.name] = wrapper;
     }
 };
 
-/**
- * Parse function, map arguments
- * @throws when injection not found
- * @param {*} instance
- * @namespace instance {Object}
- * @property instance.name {String}
- * @property instance.function {Function}
- * @property instance.injections {Array} Injections
- */
-Loader.prototype.createInjections = function (instance) {
-    if (!instance.exports) {
-        var injections = [],
-            args = instance.function.toString()
-                .replace(/((\/\/.*$)|(\/\*[\s\S]*?\*\/)|(\s))/mg,'')
-                .match(/^function\s*[^\(]*\(\s*([^\)]*)\)/m)[1]
-                .split(/,/)
-                .filter(function(e) {
-                    return !!e;
-                }),
-            i;
-
-        for (i = 0; i < args.length; i+=1) {
-            var name = args[i];
-            if (this.wrappers[name]) {
-                injections.push(this.wrappers[name].call(this, instance));
-                continue;
-            }
-
-            if (!this.functions[name]) {
-                throw new Error('Injector error, Function "' + name + '" not found\n\t'+instance.filename);
-            }
-
-            if (!this.functions[name].exports) {
-                if (this.functions[name].completed === undefined) {
-                    this.functions[name].completed = false;
-                    this.functions[name].exports = this.invoke(this.functions[name]);
-                    this.functions[name].completed = true;
-                } else {
-                    this.logger.warn('Circular dependency: %s => %s', instance.name, name);
-                }
-            } else {
-                this.functions[name].completed = true;
-            }
-
-            if (!this.functions[name].completed) {
-                injections.push(null);
-            } else {
-                injections.push(this.functions[name].exports);
-            }
-        }
-
-        instance.injections = injections;
+Loader.prototype.get = function (fromInjection, name) {
+    if (!(fromInjection instanceof Injection)) {
+        name = fromInjection;
+        fromInjection = undefined;
     }
-};
-/**
- * invoke function in loader scope
- * @namespace instance {Object}
- * @property instance.name {String} Function name
- * @property instance.function {Function}
- * @property instance.injections {Array} Injections
- * @returns {*}
- */
-Loader.prototype.invoke = function(instance) {
-    if (typeof instance === 'function') {
-        if (!instance.name) {
-            throw new Error('Function name required');
-        }
-        
-        //noinspection JSValidateTypes
-        return this.invoke({function: instance, name: instance.name});
-    }
-
-    this.createInjections(instance);
-    var result = instance.exports;
-
-    if (!instance.hasOwnProperty('exports')) {
-        result = instance.function.apply(instance.scope, instance.injections);
-        //noinspection JSUndefinedPropertyAssignment
-        instance.exports = result;
-    }
-    return result;
-};
-/**
- * load files from directory
- * file must contain <b>.inject.js</b> name
- * @param {String} directory
- */
-Loader.prototype.load = function (directory) {
-    var queue = {},
-        i;
+    var wrapper = this.wrappers[name];
+    var injection = this.injections[name];
     
-    this.stages.forEach(function(stage) {
-        queue[stage] = [];
-    });
-    
-    function toQueue(filename) {
-        var result = require(filename),
-            name;
-        for(name in result) {
-            if (result.hasOwnProperty(name)) {
-                var func = result[name],
-                    funcName = func.name;
-                if (funcName) {
-                    var instance = {
-                        filename: filename,
-                        name: name,
-                        scope: result,
-                        function: func
-                    };
-                    queue[funcName] = queue[funcName] || [];
-                    queue[funcName].push(instance);
-                }
-            }
-        }
+    if (wrapper) {
+        return wrapper.call(this, fromInjection || {name: 'main'});
+    }
+    if (injection) {
+        return this.invoke(injection, fromInjection && [].concat.apply([], fromInjection.args));
     }
 
-    function openDirectory(dir) {
-        var list = fs.readdirSync(dir);
-
-        list.forEach(function(file) {
-            file = path.resolve(dir, file);
-            var stat = fs.lstatSync(file);
-            if (stat.isDirectory()) {
-                openDirectory(file);
-            } else {
-                if (/\.inject\.js$/.test(file)) {
-                    toQueue(file);
-                }
-            }
-        });
-    }
-
-    openDirectory(path.resolve(directory));
-    
-    for (i = 0; i < this.stages.length; i+=1) {
-        var stage = this.stages[i];
-
-        while(queue[stage].length) {
-            var instance = queue[stage].shift();
-            if (stage === 'inject') {
-                var rf = this.registerFunction(instance, true);
-                rf.stage = stage;
-                queue.exec.unshift(rf);
-            } else {
-                this.logger.fields.stage = instance.stage;
-                this.invoke(instance);
-                delete this.logger.fields.stage;
-            }
-        }
-    }
+    throw new Error('Cannot find wrapper or injection with this name "' + name + '"');
 };
 
 var loader = new Loader('main');
 
-loader.registerWrapper(function logger(instance) {
-    var app = {};
-    if (instance && instance.name) {
-        app.app = instance.name;
-    }
-    return this.logger.child(app);
+loader.registerWrapper(function logger(injection) {
+    return this.logger.child({function: injection.name});
 });
 
-loader.registerWrapper(function injector() {
-    return this.get.bind(this);
+loader.registerWrapper(function injector(injection) {
+    return this.get.bind(this, injection);
 });
 
 Loader.prototype.scope = {};

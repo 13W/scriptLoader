@@ -9,5 +9,7 @@ var Loader = require('../').Loader,
 loader.load('./nested');
 
 loader.invoke(function qew(injector, $longggg) {
+    console.log(injector('$longggg'));
+    console.log($longggg);
     console.log(injector('$longggg') === $longggg);
 });

@@ -13,7 +13,7 @@ Use
 ===
 ```
     var Loader = require('sl').Loader;
-    var loader = Loader('myApp');
+    var loader = new Loader('myApp');
     loader.load('/path');
 ```
 

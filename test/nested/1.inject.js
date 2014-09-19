@@ -5,8 +5,6 @@
  */
 
 exports.$longggg = function inject() {
-    console.log('Invoked!!!');
     var z = {}, i;
-    for (i = 0; i < 1000000; ) {i += 1;}
     return z;
 };
